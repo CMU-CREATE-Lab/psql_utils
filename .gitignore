@@ -1,2 +1,4 @@
 .venv
 tiger_downloads
+__pycache__
+nhgis_downloads
