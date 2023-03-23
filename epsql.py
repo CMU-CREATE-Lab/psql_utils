@@ -1,7 +1,12 @@
 
 #%%
-import binascii, random, sys
-import utils
+import binascii
+import random, shapely
+import string
+import sys
+from typing import Any, cast
+import pandas as pd
+from utils import utils
 
 """epsql:  Extensions to SQLAlchemy engine and connection
 
@@ -16,18 +21,18 @@ def sanitize_column_name(colname: str):
     colname = re.sub(r'\W+', '_', colname) # Replace contiguous sets of non-word-chars with underscore
     return colname.lower()
 
-def sanitize_column_names(df, inplace=False):
-    return df.rename(columns={c:sanitize_column_name(c) for c in df.columns}, inplace=inplace)
+def sanitize_column_names(df: pd.DataFrame, inplace: bool = False):
+    return df.rename(columns={c:sanitize_column_name(c) for c in cast(list[str], df.columns)}, inplace=inplace)
 
 # Returns table name portion of table_name_with_optional_schema
-def get_table_name(table_name_with_optional_schema):
+def get_table_name(table_name_with_optional_schema: str):
     if '.' in table_name_with_optional_schema:
         return table_name_with_optional_schema.split('.')[-1]
     else:
         return table_name_with_optional_schema
 
 # Returns schema name portion of table_name_with_optional_schema;  'public' if no schema specified
-def get_schema(table_name_with_optional_schema):
+def get_schema(table_name_with_optional_schema: str):
     if '.' in table_name_with_optional_schema:
         return table_name_with_optional_schema.split('.')[0]
     else:
@@ -44,66 +49,78 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
             "Don't instantiate this class directly;  using epsql.Engine will patch these methods "
             "into Connection and Engine instances.")
 
-    def execute(self, *args, verbose=False, **kwargs):
+    def execute(self, *args: Any, verbose: bool = False, **kwargs: Any):
         if verbose:
             print(f'{args[0]}')
         before = time.time()
-        ret=sqlalchemy.engine.base.Connection.execute(self, *args, **kwargs)
+        # ignore vscode's warning about the return type of execute
+
+        ret=sqlalchemy.engine.base.Connection.execute(self, *args, **kwargs) # type: ignore
         if verbose:
             print(f'Completed in {time.time()-before:.1f} seconds')
         return ret
 
-    def execute_returning_value(self, *args, **kwargs):
-        dicts = self.execute_returning_dicts(*args, **kwargs)
+    def execute_returning_value(self, *args: Any, **kwargs: Any):
+        dicts = self.execute_returning_dicts(*args, **kwargs) # 
         assert(len(dicts) == 1)
         values = list(dicts[0].values())
         assert(len(values) == 1)
         return values[0]
     
-    def execute_returning_geom(self, *args, **kwargs):
-        gdf = self.execute_returning_gdf(*args, **kwargs)
-        assert(len(gdf) == 1)
-        return gdf.geometry[0]
+    def execute_returning_geom(self, *args: Any, **kwargs: Any) -> shapely.geometry.base.BaseGeometry: # type: ignore
+        gdf = self.execute_returning_gdf(*args, **kwargs) # type: ignore
+        assert(len(gdf) == 1) # type: ignore
+        return gdf.geometry[0] # type: ignore
 
-    def execute_returning_dicts(self, *args, **kwargs):
+    def execute_returning_dicts(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         results = self.execute(*args, **kwargs)
-        return [dict(rec) for rec in results]
+        return [dict(rec) for rec in results] # type: ignore
 
     # For kwargs, see https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.read_sql_query.html
-    def execute_returning_df(self, sql, **kwargs):
+    def execute_returning_df(self, sql: str, **kwargs: Any) -> pd.DataFrame:
         import pandas as pd # type: ignore
         return pd.read_sql_query(sql, self, **kwargs)
 
     # For kwargs, see https://geopandas.org/reference/geopandas.read_postgis.html#geopandas.read_postgis
-    def execute_returning_gdf(self, sql, **kwargs):
+    def execute_returning_gdf(self, sql: str, **kwargs: Any): # type: ignore
         import geopandas as gpd # type: ignore
-        return gpd.read_postgis(sql, self, **kwargs)
+        return gpd.read_postgis(sql, self, **kwargs) # type: ignore
 
-    def execute_update(self, *args, **kwargs):
-        return self.execute(*args, **kwargs).rowcount
+    def execute_update(self, *args: Any, **kwargs: Any) -> int:
+        return self.execute(*args, **kwargs).rowcount # type: ignore
+
+    def execute_delete(self, *args: Any, **kwargs: Any) -> int:
+        return self.execute(*args, **kwargs).rowcount # type: ignore
 
     #def df_to_table(self, df, table_name, **kwargs):
     #    with Stopwatch(f'Adding {len(df)} records to {table_name}'):
     #        sanitize_column_names(df).to_sql(table_name, self, **kwargs)
 
-    def table_exists(self, table_name):
+    def table_exists(self, table_name: str) -> bool:
         return self.execute_exists(f"""SELECT EXISTS (
             SELECT FROM pg_tables WHERE schemaname='{get_schema(table_name)}' AND tablename='{get_table_name(table_name)}')""")
+    
+    def table_column_exists(self, table_name: str, column_name: str) -> bool:
+        return column_name in self.table_columns(table_name)
 
-    def execute_exists(self, sql, **kwargs):
+    def table_columns(self, table_name: str) -> list[str]:
+        return [c['column_name'] for c in self.execute_returning_dicts(f"""SELECT column_name FROM information_schema.columns WHERE table_name='{get_table_name(table_name)}'""")]
+        return self.execute_returning_value(f"SELECT json_object_keys(to_json(json_populate_record(NULL::{table_name}, '{{}}'::JSON)))")
+
+    def execute_exists(self, sql: str, **kwargs: Any) -> bool:
         return self.execute_returning_dicts(sql, **kwargs)[0]['exists']
 
-    def execute_count(self, sql, **kwargs):
+    def execute_count(self, sql: str, **kwargs: Any):
         return self.execute_returning_dicts(sql, **kwargs)[0]['count']
 
-    def insert(self, table_name, record_dict):
+    def insert(self, table_name: str, record_dict: dict[str, Any]) -> dict[str, Any]:
         keys = ','.join(record_dict.keys())
         values = ','.join(['%s'] * len(record_dict))
         cmd = f"INSERT INTO {table_name} ({keys}) VALUES ({values}) RETURNING *"
         return self.execute_returning_dicts(cmd, tuple(record_dict.values()))[0]
 
     # On conflict, do nothing
-    def insert_unless_conflict(self, table_name, record_dict):
+    def insert_unless_conflict(self, table_name: str, record_dict: dict[str, Any]):
         keys = ','.join(record_dict.keys())
         values = ','.join(['%s'] * len(record_dict))
         cmd = f"INSERT INTO {table_name} ({keys}) VALUES ({values}) ON CONFLICT DO NOTHING"
@@ -113,7 +130,7 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
     # update the conflicting record with values from record_dict
     # Use a unique or primary index on your table to trigger the update instead of insert
     # This uses ON CONFLICT from Postgres
-    def upsert(self, table_name, index_fields, record_dict):
+    def upsert(self, table_name: str, index_fields: list[str], record_dict: dict[str, Any]):
         keys = ','.join(record_dict.keys())
         values = ','.join(['%s'] * len(record_dict))
         index_fields_str = ','.join(index_fields)
@@ -124,7 +141,7 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
         return self.execute(cmd, tuple(list(record_dict.values()) + list(record_dict.values())))
 
 
-    def geocode(self, address, max_results=1, latlon_only=False):
+    def geocode(self, address: str, max_results: int = 1, latlon_only: bool = False):
         if latlon_only:
             sel = """
             SELECT rating, geomout, to_jsonb((addy)) as addy
@@ -144,7 +161,7 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
                 """
         return self.execute_returning_dicts(sel, address=address, max_results=max_results)
 
-    def repair_geometries_if_needed(self, table_name, geom_column='geom'):
+    def repair_geometries_if_needed(self, table_name: str, geom_column: str = 'geom'):
         print(f'Checking {table_name} for invalid geometries...')
         count = self.execute_count(f'select count(*) from {table_name} where not st_isvalid({geom_column})')
         if count:
@@ -156,7 +173,7 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
 
     def add_highest_overlap_crosswalk(
             self, dest_table_name: str, dest_row_id: str, dest_new_col: str, src_table_name: str, src_col: str,
-            dest_row_id_min=None, dest_row_id_max=None):
+            dest_row_id_min: str|None = None, dest_row_id_max: str|None = None):
         """Create a geographic crosswalk mapping each destination record to a single source record.
         If multiple source records overlap a destination record, the one with the largest area overlap is chosen.
         A source record may be recorded as a match to any number of destination records, including 0.
@@ -182,7 +199,7 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
         self.execute(f'alter table {dest_table_name} add if not exists {dest_new_col} text;')
         tmp_table_name = f"tmp_crosswalk_{random.getrandbits(64):016x}"
 
-        where_clauses = []
+        where_clauses: list[str] = []
         if dest_row_id_min:
             where_clauses.append(f"dest.{dest_row_id} >= '{dest_row_id_min}'")
         if dest_row_id_max:
@@ -207,9 +224,9 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
         nrows = self.execute_update(cmd, verbose=True)
         print(f'Created {nrows} crosswalk entries')
 
-def _with_connect(engine, member_name, *args, **kwargs):
-    with engine.connect() as con:
-        return getattr(con, member_name)(*args, **kwargs)
+def _with_connect(engine, member_name, *args, **kwargs): # type: ignore
+    with engine.connect() as con: # type: ignore
+        return getattr(con, member_name)(*args, **kwargs) # type: ignore
 
 def _find_pghost():
     candidates = [
@@ -222,7 +239,7 @@ def _find_pghost():
     raise Exception(f'Attempting to find unix socket for postgresql, but cannot find any of {candidates}')
 
 class Engine(ConnectionExtensions):
-    def __init__(self, engine=None, db_name="earthtime"):
+    def __init__(self, engine: Any = None, db_name: str = "earthtime"):
         if not engine:
 
             # cocalc sets PGUSER to something unhelpful
@@ -238,18 +255,19 @@ class Engine(ConnectionExtensions):
             os.environ["PGHOST"] = _find_pghost()
 
             print(f'Connecting to database {db_name} with host={os.environ["PGHOST"]}')            
-            engine = sqlalchemy.create_engine(
+            
+            engine = sqlalchemy.create_engine( # type: ignore
                f'postgresql:///{db_name}',
                connect_args={"options": "-c timezone=utc"})
 
         # Patch engine with connection-oriented extensions from ConnectionExtensions
         for member_name, member in ConnectionExtensions.__dict__.items():
             if isinstance(member, types.FunctionType) and member_name[:2] != "__":
-                setattr(self, member_name, functools.partial(_with_connect, self, member_name))
+                setattr(self, member_name, functools.partial(_with_connect, self, member_name)) # type: ignore
 
         self.engine = engine
 
-    def connect(self) -> ConnectionExtensions:
+    def connect(self) -> ConnectionExtensions: # type: ignore
         con = self.engine.connect()
 
         # Patch connection with extensions from ConnectionExtensions
@@ -257,12 +275,12 @@ class Engine(ConnectionExtensions):
             if isinstance(member, types.FunctionType) and member_name[:2] != "__":
                 setattr(con, member_name, types.MethodType(member, con))
 
-        return con
+        return con # type: ignore
     
-    def geocode_batch(self, addresses, max_results=1, nthreads=10):
+    def geocode_batch(self, addresses: list[str], max_results: int = 1, nthreads: int = 10):
         print('RECOMMEND USING geocode_in_place instead (faster, writes directly to table)')
-        mutex = threading.Lock()
-        ret = [None] * len(addresses)
+        mutex = threading.Lock() # type: ignore
+        ret: list[None | list[dict[str, Any]]] = [None] * len(addresses)
         i = len(addresses)
         def geocode():
             with self.connect() as con:
@@ -274,8 +292,10 @@ class Engine(ConnectionExtensions):
                         i -= 1
                         mine = i
                     ret[mine] = con.geocode(addresses[mine], max_results)
+        threads: list[utils.ThCall] = []
         try:
-            threads = [utils.ThCall(geocode) for x in range(nthreads)]
+            for _ in range(nthreads):
+                threads.append(utils.ThCall(geocode))
             for thread in threads:
                 thread.join()
         finally:
@@ -284,7 +304,7 @@ class Engine(ConnectionExtensions):
                 thread.join()
         return ret
     
-    def geocode_chunk_in_place(self, table_name, begin_idx=None, end_idx=None, idx_name='idx'):
+    def geocode_chunk_in_place(self, table_name: str, begin_idx: str|None = None, end_idx: str|None = None, idx_name: str = 'idx'):
         if begin_idx != None:
             condition = f'and {begin_idx} <= {idx_name} and {idx_name} <= {end_idx}'
         else:
@@ -316,7 +336,7 @@ class Engine(ConnectionExtensions):
         sys.stdout.write(f'[coded {begin_idx}:{end_idx}]')
         sys.stdout.flush()
 
-    def geocode_in_place(self, table_name, idx_name='idx', chunk_size=500, nthreads=15):
+    def geocode_in_place(self, table_name: str, idx_name: str = 'idx', chunk_size: int = 500, nthreads:int = 15):
         # Performance is around 400 geocodes per second, on hal21 with 15 threads
         min_idx = self.execute_returning_dicts(f'select min(idx) from {table_name}')[0]['min']
         max_idx = self.execute_returning_dicts(f'select max(idx) from {table_name}')[0]['max']
@@ -329,4 +349,20 @@ class Engine(ConnectionExtensions):
             pool.submit(self.geocode_chunk_in_place, table_name, chunk, min(chunk + chunk_size - 1, max_idx), idx_name)
         pool.shutdown()
 
+class TempSchema:
+    def __init__(self, engine: Engine, prefix: str = "", delete: bool = False, cascade: bool = False):
+        self.engine = engine
+        self.delete = delete
+        self.cascade = cascade
+        self.schema = f"{prefix}tmp{''.join(random.choices(string.ascii_lowercase + string.digits, k=20))}"
+    def __enter__(self):
+        self.engine.execute(f'CREATE SCHEMA IF NOT EXISTS {self.schema}')
+        return self.schema
+    def __exit__(self, exc_type, exc_value, traceback): # type: ignore
+        if self.delete:
+            self.engine.execute(f'DROP SCHEMA IF EXISTS {self.schema} {"CASCADE" if self.cascade else ""}')
+        pass
 
+
+
+# %%
