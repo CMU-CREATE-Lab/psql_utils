@@ -4,16 +4,23 @@ import binascii
 import random, shapely
 import string
 import sys
-from typing import Any, cast
-import pandas as pd
+from typing import TYPE_CHECKING, Any, cast
 from utils import utils
+if TYPE_CHECKING:
+    import geopandas as gpd
+    import pandas as pd
 
 """epsql:  Extensions to SQLAlchemy engine and connection
 
 Includes TIGER geocoding, simplified UNIX socket connection, convenience wrappers for execute"""
 
-
 import functools, os, re, sqlalchemy, threading, time, types
+
+def sanitize_table_name(name: str):
+    name = re.sub(r'^[^\w\.]+', '', name) # Remove leading non-{word,"."}-chars
+    name = re.sub(r'[^\w\.]+$', '', name) # Remove trailing non-{word,"."}-chars
+    name = re.sub(r'[^\w\.]+', '_', name) # Replace contiguous sets of non-{word,"."}-chars with underscore
+    return name.lower()
 
 def sanitize_column_name(colname: str):
     colname = re.sub(r'^\W+', '', colname) # Remove leading non-word-chars
@@ -21,7 +28,7 @@ def sanitize_column_name(colname: str):
     colname = re.sub(r'\W+', '_', colname) # Replace contiguous sets of non-word-chars with underscore
     return colname.lower()
 
-def sanitize_column_names(df: pd.DataFrame, inplace: bool = False):
+def sanitize_column_names(df: "pd.DataFrame", inplace: bool = False):
     return df.rename(columns={c:sanitize_column_name(c) for c in cast(list[str], df.columns)}, inplace=inplace)
 
 # Returns table name portion of table_name_with_optional_schema
@@ -61,7 +68,7 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
         return ret
 
     def execute_returning_value(self, *args: Any, **kwargs: Any):
-        dicts = self.execute_returning_dicts(*args, **kwargs) # 
+        dicts = self.execute_returning_dicts(*args, **kwargs)
         assert(len(dicts) == 1)
         values = list(dicts[0].values())
         assert(len(values) == 1)
@@ -77,14 +84,16 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
         return [dict(rec) for rec in results] # type: ignore
 
     # For kwargs, see https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.read_sql_query.html
-    def execute_returning_df(self, sql: str, **kwargs: Any) -> pd.DataFrame:
+    def execute_returning_df(self, sql: str, **kwargs: Any) -> "pd.DataFrame":
         import pandas as pd # type: ignore
         return pd.read_sql_query(sql, self, **kwargs)
 
     # For kwargs, see https://geopandas.org/reference/geopandas.read_postgis.html#geopandas.read_postgis
-    def execute_returning_gdf(self, sql: str, **kwargs: Any): # type: ignore
-        import geopandas as gpd # type: ignore
-        return gpd.read_postgis(sql, self, **kwargs) # type: ignore
+    def execute_returning_gdf(self, sql: str, **kwargs: Any) -> "gpd.GeoDataFrame":
+        import geopandas as gpd
+        ret = gpd.read_postgis(sql, self, **kwargs)
+        assert(isinstance(ret, gpd.GeoDataFrame))
+        return ret
 
     def execute_update(self, *args: Any, **kwargs: Any) -> int:
         return self.execute(*args, **kwargs).rowcount # type: ignore
@@ -106,6 +115,14 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
     def table_columns(self, table_name: str) -> list[str]:
         return [c['column_name'] for c in self.execute_returning_dicts(f"""SELECT column_name FROM information_schema.columns WHERE table_name='{get_table_name(table_name)}'""")]
         return self.execute_returning_value(f"SELECT json_object_keys(to_json(json_populate_record(NULL::{table_name}, '{{}}'::JSON)))")
+
+    def table_has_primary_key(self, table_name: str) -> bool:
+        #return self.execute_count(f"""SELECT COUNT(*) FROM pg_constraint WHERE conrelid = '{table_name}'::regclass AND contype = 'p'""") > 0
+        return self.execute_count(f"""
+            SELECT count(*) from information_schema.table_constraints 
+                where table_name = '{get_table_name(table_name)}' 
+                    and table_schema = '{get_schema(table_name)}'
+                    and constraint_type = 'PRIMARY KEY'""") > 0
 
     def execute_exists(self, sql: str, **kwargs: Any) -> bool:
         return self.execute_returning_dicts(sql, **kwargs)[0]['exists']
