@@ -109,6 +109,9 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
         return self.execute_exists(f"""SELECT EXISTS (
             SELECT FROM pg_tables WHERE schemaname='{get_schema(table_name)}' AND tablename='{get_table_name(table_name)}')""")
     
+    def list_tables(self, schema: str = 'public') -> list[str]:
+        return [r['tablename'] for r in self.execute_returning_dicts(f"SELECT tablename FROM pg_tables WHERE schemaname='{schema}'")]
+    
     def table_column_exists(self, table_name: str, column_name: str) -> bool:
         return column_name in self.table_columns(table_name)
 
