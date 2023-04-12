@@ -112,6 +112,21 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
     def list_tables(self, schema: str = 'public') -> list[str]:
         return [r['tablename'] for r in self.execute_returning_dicts(f"SELECT tablename FROM pg_tables WHERE schemaname='{schema}'")]
     
+    def list_schema_sizes(self) -> "pd.DataFrame":
+        return self.execute_returning_df("""
+            SELECT schema_name, 
+                pg_size_pretty(sum(table_size)::bigint) as size,
+                (sum(table_size) / pg_database_size(current_database())) * 100 as percent,
+                sum(table_size)/1e6 as size_mb
+            FROM (
+            SELECT pg_catalog.pg_namespace.nspname as schema_name,
+                    pg_relation_size(pg_catalog.pg_class.oid) as table_size
+            FROM   pg_catalog.pg_class
+                JOIN pg_catalog.pg_namespace ON relnamespace = pg_catalog.pg_namespace.oid
+            ) t
+            GROUP BY schema_name
+            ORDER BY percent DESC""")
+    
     def table_column_exists(self, table_name: str, column_name: str) -> bool:
         return column_name in self.table_columns(table_name)
 
@@ -259,7 +274,7 @@ def _find_pghost():
     raise Exception(f'Attempting to find unix socket for postgresql, but cannot find any of {candidates}')
 
 class Engine(ConnectionExtensions):
-    def __init__(self, engine: Any = None, db_name: str = "earthtime"):
+    def __init__(self, engine: Any = None, db_name: str = "earthtime", verbose: bool = True):
         if not engine:
 
             # cocalc sets PGUSER to something unhelpful
@@ -274,7 +289,8 @@ class Engine(ConnectionExtensions):
             # so we need to set instead using environment variable
             os.environ["PGHOST"] = _find_pghost()
 
-            print(f'Connecting to database {db_name} with host={os.environ["PGHOST"]}')            
+            if verbose:
+                print(f'Connecting to database {db_name} with host={os.environ["PGHOST"]}')            
             
             engine = sqlalchemy.create_engine( # type: ignore
                f'postgresql:///{db_name}',
