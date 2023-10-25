@@ -172,8 +172,9 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
         cmd = f"""
             INSERT INTO {table_name} ({keys}) VALUES ({values})
             ON CONFLICT ({index_fields_str}) DO UPDATE SET ({keys}) = ({values});"""
-        print("in upsert", cmd)
-        return self.execute(cmd, tuple(list(record_dict.values()) + list(record_dict.values())))
+        params = tuple(list(record_dict.values()) + list(record_dict.values()))
+        #print("in upsert", index_fields, record_dict, cmd, params)
+        return self.execute(cmd, params)
 
 
     def geocode(self, address: str, max_results: int = 1, latlon_only: bool = False):
