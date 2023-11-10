@@ -260,6 +260,55 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
         nrows = self.execute_update(cmd, verbose=True)
         print(f'Created {nrows} crosswalk entries')
 
+    def create_highest_overlap_crosswalk(
+            self,
+            dest_table: str, dest_id: str, 
+            src_table: str, src_id: str,
+            crosswalk_table: str|None = None):
+        """Create a geographic crosswalk mapping each destination record to a single source record.
+        If multiple source records overlap a destination record, the one with the largest area overlap is chosen.
+        Each destination record matches to a single source record.
+        Each source record may match any number of destination records (including 0).
+        Typically the geographic entities in the destination table are smaller than those of the source table.
+
+        Parameters:
+        dest_table:  Name of destination table, including schema if any.
+        dest_id:     A unique, indexed row for destination table usable for join.  Typically geoid for census.
+        src_table:   Name of source table, including schema if any.
+        src_id:      Name of unique ID for source record, to be filled into dest_new_col for matching dest record.
+                    Typically geoid for census.
+        crosswalk_table:  Name of crosswalk table to create.  If None, will be created as {src_table}_{dest_table}_crosswalk.
+        Performance considerations:
+        Both source and destination tables should have spatially indexed geometries.
+        This function is fairly performant, able to crosswalk ~11M blocks to ~2K tracts in around two hours on 2010-era server.
+        """
+
+        if crosswalk_table is None:
+            crosswalk_table = f"{src_table}_{get_table_name(dest_table)}_crosswalk"
+
+        # Assumes dest_new_col should be text
+        print(f'Creating {crosswalk_table} as crosswalk from {src_table}.{src_id} (few) to {dest_table}.{dest_id} (many), selecting highest overlap...')
+
+        full_src_id = f'{get_table_name(src_table)}_{src_id}'
+        full_dest_id = f'{get_table_name(dest_table)}_{dest_id}'
+        
+        cmd = f"""
+            create table if not exists {crosswalk_table} as
+                select distinct on ({full_dest_id}) dest.{dest_id} as {full_dest_id}, src.{src_id} as {full_src_id}
+                    from {src_table} as src
+                    join {dest_table} as dest
+                    on st_intersects(src.geom, dest.geom) and not st_touches(src.geom, dest.geom)
+                    order by {full_dest_id}, st_area(st_intersection(src.geom, dest.geom)) desc;
+            create unique index if not exists {full_dest_id}_idx on {crosswalk_table} ({full_dest_id});
+            create index if not exists {full_src_id}_idx on {crosswalk_table} ({full_src_id});
+        """
+        self.execute(cmd)
+
+        n_src = self.execute_returning_value(f"select count(distinct({full_src_id})) from {crosswalk_table};")
+        n_dest = self.execute_returning_value(f"select count(distinct({full_dest_id})) from {crosswalk_table};")
+        print(f"Created crosswalk where each of {n_dest} {full_dest_id}'s is matched to one of {n_src} {full_src_id}'s.")
+
+
 def _with_connect(engine, member_name, *args, **kwargs): # type: ignore
     with engine.connect() as con: # type: ignore
         return getattr(con, member_name)(*args, **kwargs) # type: ignore
