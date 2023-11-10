@@ -1,9 +1,11 @@
-import datetime
+import datetime, os
 from typing import Callable, Protocol, cast
 import folium
 import shapely
 import geopandas as gpd
+from psql_utils import epsql
 from psql_utils.epsql import Engine
+from utils import utils
 
 from shapely import Point
 from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, GeometryCollection
@@ -98,3 +100,35 @@ def get_geom_at_iloc(gdf, iloc):
     if shapely.get_srid(geom) == 0:
         geom = shapely.set_srid(geom, gdf.crs.to_epsg())
     return geom
+
+class GeographySource:
+    def __init__(self, table_name_with_schema, url):
+        self.table_name_with_schema = table_name_with_schema
+        self.table_name = epsql.get_table_name(table_name_with_schema)
+        self.schema_name = epsql.get_schema(table_name_with_schema)
+        assert self.schema_name
+        self.url = url
+
+    def local_path(self):
+        return os.path.join(self.schema_name, self.table_name + os.path.splitext(self.url)[1])
+
+    def download(self):
+        utils.download_file(self.url, self.local_path())
+
+    def to_postgis(self, engine: Engine):
+        self.download()
+        gdf = gpd.read_file(self.local_path())
+        gdf.to_crs(epsg=4326, inplace=True) # Reproject to WGS84, if not already
+        epsql.sanitize_column_names(gdf, inplace=True)
+        gdf.rename_geometry('geom', inplace=True)
+        engine.execute(f"create schema if not exists {self.schema_name}")
+        print(f"Read {len(gdf)} rows from {self.local_path()}")
+        gdf.to_postgis(self.table_name, engine.engine, schema=self.schema_name, if_exists='replace', index=False)#, dtype={'geom': 'Geometry'})
+        # Make sure geometries are valid
+        engine.execute(f"""
+            UPDATE {self.table_name_with_schema}
+            SET geom=ST_MakeValid(geom)
+            WHERE NOT ST_IsValid(geom);""")
+        # Create spatial index
+        engine.execute(f'CREATE INDEX IF NOT EXISTS {self.table_name}_geom_idx ON {self.table_name_with_schema} USING GIST (geom)')
+        print(f"Wrote to {self.table_name_with_schema}")
