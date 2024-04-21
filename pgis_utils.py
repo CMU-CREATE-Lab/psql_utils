@@ -127,10 +127,11 @@ class GeographySource:
             self.download()
             gdf = gpd.read_file(self.local_path())
             gdf.to_crs(epsg=4326, inplace=True) # Reproject to WGS84, if not already
-            epsql.sanitize_column_names(gdf, inplace=True)
-            gdf.rename_geometry('geom', inplace=True)
-            engine.execute(f"create schema if not exists {self.schema_name}")
             print(f"{self.table_name_with_schema}: Read {len(gdf)} rows from {self.local_path()}")
+        epsql.sanitize_column_names(gdf, inplace=True)
+        gdf.rename_geometry('geom', inplace=True)
+        print(gdf.columns)
+        engine.execute(f"create schema if not exists {self.schema_name}")
         gdf.to_postgis(self.table_name, engine.engine, schema=self.schema_name, if_exists='replace', index=False)#, dtype={'geom': 'Geometry'})
         # Make sure geometries are valid
         engine.execute(f"""
@@ -139,9 +140,10 @@ class GeographySource:
             WHERE NOT ST_IsValid(geom);""")
         # Create ID index
         if self.id_column_name:
-            engine.execute(f'CREATE UNIQUE INDEX IF NOT EXISTS {self.table_name}_id_idx ON {self.table_name_with_schema} ({self.id_column_name})')
-        # Create spatial index
-        engine.execute(f'CREATE INDEX IF NOT EXISTS {self.table_name}_geom_idx ON {self.table_name_with_schema} USING GIST (geom)')
+            engine.execute(f'CREATE UNIQUE INDEX IF NOT EXISTS {self.table_name}_id_idx ON {self.table_name_with_schema} ({self.id_column_name});')
+        # Create spatial index for both geom and geog
+        engine.execute(f'CREATE INDEX IF NOT EXISTS {self.table_name}_geom_idx ON {self.table_name_with_schema} USING GIST (geom);')
+        engine.execute(f'CREATE INDEX IF NOT EXISTS {self.table_name}_geog_idx ON {self.table_name_with_schema} USING GIST (geography(geom));')
         print(f"{self.table_name_with_schema}: Created and indexed")
 
     def create_crosswalk(self, engine: Engine, dest_table_name: str, dest_id_column_name: str):

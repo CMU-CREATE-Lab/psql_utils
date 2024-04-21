@@ -1,6 +1,7 @@
 
 #%%
 import binascii
+from functools import cache
 import random, shapely
 import string
 import sys
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
 Includes TIGER geocoding, simplified UNIX socket connection, convenience wrappers for execute"""
 
 import functools, os, re, sqlalchemy, threading, time, types
+
+@cache
+def sqlalchemy_is_v2():
+    return int(sqlalchemy.__version__.split('.')[0]) >= 2
+
 
 def sanitize_table_name(name: str):
     name = re.sub(r'^[^\w\.]+', '', name) # Remove leading non-{word,"."}-chars
@@ -45,6 +51,8 @@ def get_schema(table_name_with_optional_schema: str):
     else:
         return 'public'
 
+from sqlalchemy import text
+
 class ConnectionExtensions(sqlalchemy.engine.base.Connection):
     """Extensions for Connection and Engine
 
@@ -56,13 +64,13 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
             "Don't instantiate this class directly;  using epsql.Engine will patch these methods "
             "into Connection and Engine instances.")
 
-    def execute(self, *args: Any, verbose: bool = False, **kwargs: Any):
+    def execute(self, query, *args: Any, verbose: bool = False, **kwargs: Any):
         if verbose:
             print(f'{args[0]}')
         before = time.time()
         # ignore vscode's warning about the return type of execute
 
-        ret=sqlalchemy.engine.base.Connection.execute(self, *args, **kwargs) # type: ignore
+        ret=sqlalchemy.engine.base.Connection.execute(self, text(query), *args, **kwargs) # type: ignore
         if verbose:
             print(f'Completed in {time.time()-before:.1f} seconds')
         return ret
@@ -81,7 +89,12 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
 
     def execute_returning_dicts(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         results = self.execute(*args, **kwargs)
-        return [dict(rec) for rec in results] # type: ignore
+        if sqlalchemy_is_v2():
+            # untested on 1.x;  if it works, we can always use this code and remove the conditional
+            keys = list(results.keys())
+            return [dict(zip(keys, rec)) for rec in results]
+        else:
+            return [dict(rec) for rec in results] # type: ignore
 
     # For kwargs, see https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.read_sql_query.html
     def execute_returning_df(self, sql: str, **kwargs: Any) -> "pd.DataFrame":
