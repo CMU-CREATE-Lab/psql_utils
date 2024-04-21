@@ -4,7 +4,7 @@ import glob, os, psycopg2, re, sys
 import geopandas as gpd
 
 from utils import utils
-from utils import epsql
+from psql_utils import epsql
 
 #%%
 tiger_downloads = 'tiger_downloads'

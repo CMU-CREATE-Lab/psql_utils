@@ -305,12 +305,16 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
         full_src_id = f'{get_table_name(src_table)}_{src_id}'
         full_dest_id = f'{get_table_name(dest_table)}_{dest_id}'
         
+        # TODO: remove 0.1 threshold and instead add way to subset dest 
+        # TODO: remove drop table
         cmd = f"""
+            drop table if exists {crosswalk_table};
             create table if not exists {crosswalk_table} as
                 select distinct on ({full_dest_id}) dest.{dest_id} as {full_dest_id}, src.{src_id} as {full_src_id}
                     from {src_table} as src
                     join {dest_table} as dest
                     on st_intersects(src.geom, dest.geom) and not st_touches(src.geom, dest.geom)
+                    where st_area(st_intersection(src.geom, dest.geom)) / st_area(dest.geom) > 0.1
                     order by {full_dest_id}, st_area(st_intersection(src.geom, dest.geom)) desc;
             create unique index if not exists {full_dest_id}_idx on {crosswalk_table} ({full_dest_id});
             create index if not exists {full_src_id}_idx on {crosswalk_table} ({full_src_id});
