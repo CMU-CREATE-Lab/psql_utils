@@ -66,7 +66,7 @@ class ConnectionExtensions(sqlalchemy.engine.base.Connection):
 
     def execute(self, query, *args: Any, verbose: bool = False, **kwargs: Any):
         if verbose:
-            print(f'{args[0]}')
+            print(f'{args}')
         before = time.time()
         # ignore vscode's warning about the return type of execute
 
